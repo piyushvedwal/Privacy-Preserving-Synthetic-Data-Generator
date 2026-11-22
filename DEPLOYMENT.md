@@ -16,7 +16,7 @@ The easiest way to deploy this Streamlit application is using Streamlit Cloud.
 1. Go to [Streamlit Cloud](https://streamlit.io/cloud)
 2. Sign in with your GitHub account
 3. Click "New app"
-4. Select your repository: `gkganesh12/Privacy-Preserving-Synthetic-Data-Generator`
+4. Select your repository: `piyushvedwal/Privacy-Preserving-Synthetic-Data-Generator`
 5. Select the branch: `main`
 6. Set the main file path: `app.py`
 7. Click "Deploy"

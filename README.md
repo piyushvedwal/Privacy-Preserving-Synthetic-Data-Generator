@@ -64,8 +64,8 @@ Built with **Streamlit**, offering an interactive and intuitive workflow:
 
 Clone the repository:
 ```bash
-git clone https://github.com/gkganesh12/privacy-preserving-synthetic-data-generator.git
-cd privacy-preserving-synthetic-data-generator
+git clone https://github.com/piyushvedwal/Privacy-Preserving-Synthetic-Data-Generator.git
+cd Privacy-Preserving-Synthetic-Data-Generator
 ```
 
 Install dependencies:
@@ -168,8 +168,9 @@ pip install -r requirements.txt
 
 ---
 
-## 👤 Author  
-**Developed by [Ganesh Khetawat](https://github.com/gkganesh12)**  
-🎓 B.Tech CSE @ ADYPU | Certified Ethical Hacker | AI & Cybersecurity Enthusiast  
+## 👥 Authors  
+- **[Ganesh Khetawat](https://github.com/gkganesh12)**: original author  
+  🔗 [LinkedIn](https://www.linkedin.com/in/ganeshkhetawat/) • [GitHub](https://github.com/gkganesh12) • [Portfolio](http://ganeshkhetawat.unaux.com/portfolio)
+- **[Piyush Vedwal](https://github.com/piyushvedwal)**: co-developer  
 
-🔗 [LinkedIn](https://www.linkedin.com/in/ganeshkhetawat/) • [GitHub](https://github.com/gkganesh12) • [Portfolio](http://ganeshkhetawat.unaux.com/portfolio)
+Original repository: [gkganesh12/Privacy-Preserving-Synthetic-Data-Generator](https://github.com/gkganesh12/Privacy-Preserving-Synthetic-Data-Generator)
