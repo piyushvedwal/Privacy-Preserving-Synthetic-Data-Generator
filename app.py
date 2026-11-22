@@ -16,6 +16,9 @@ from typing import Dict, List, Tuple, Union, Optional, Any
 from data_preprocess import DataPreprocessor
 from model_train import PrivacyPreservingCTGAN
 from evaluate import SyntheticDataEvaluator
+from privacy_checks import distance_to_closest_record
+from sample_datasets import SAMPLE_DATASETS, load_sample
+from report import build_report_data, build_markdown_report, build_json_report
 
 # Set page configuration
 st.set_page_config(
@@ -40,6 +43,18 @@ if 'training_metrics' not in st.session_state:
     st.session_state.training_metrics = None
 if 'evaluation_results' not in st.session_state:
     st.session_state.evaluation_results = None
+if 'dcr_results' not in st.session_state:
+    st.session_state.dcr_results = None
+if 'run_meta' not in st.session_state:
+    st.session_state.run_meta = {}
+if 'dataset_name' not in st.session_state:
+    st.session_state.dataset_name = None
+
+def reset_downstream_state() -> None:
+    """Clear model, synthetic data and evaluation when a new dataset is loaded."""
+    for key in ['model', 'training_metrics', 'synthetic_data', 'evaluation_results', 'dcr_results']:
+        st.session_state[key] = None
+    st.session_state.run_meta = {}
 
 # Helper functions
 def save_dataframe(df: pd.DataFrame, filename: str) -> str:
@@ -129,6 +144,44 @@ def display_metrics(metrics: Dict[str, Any]) -> None:
             if 'synthetic_model_accuracy' in utility and utility['synthetic_model_accuracy'] is not None:
                 st.metric("Synthetic Model Accuracy", f"{utility['synthetic_model_accuracy']:.4f}")
 
+def display_dcr(dcr: Dict[str, Any]) -> None:
+    """Show the Distance to Closest Record privacy check."""
+    st.subheader("Record-Level Privacy (Distance to Closest Record)")
+    st.caption(
+        "Checks whether synthetic rows copy or sit unusually close to real rows. "
+        "Each synthetic row's distance to its nearest real row is compared with how far "
+        "real rows sit from each other."
+    )
+    
+    risk = dcr['risk_level']
+    message = {
+        "Low": "✅ Low re-identification risk: synthetic rows are not unusually close to real records.",
+        "Medium": "⚠️ Medium risk: some synthetic rows sit closer to real records than expected.",
+        "High": "🚨 High risk: synthetic rows copy or nearly copy real records. Try a lower ε or fewer epochs.",
+    }[risk]
+    {"Low": st.success, "Medium": st.warning, "High": st.error}[risk](message)
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        ratio = dcr['dcr_ratio']
+        st.metric("DCR Ratio (synthetic / baseline)", f"{ratio:.3f}" if ratio is not None else "n/a")
+    with col2:
+        st.metric("Exact Copies of Real Rows", f"{dcr['exact_match_count']} ({dcr['exact_match_rate']:.2%})")
+    with col3:
+        st.metric("Median DCR (synthetic → real)", f"{dcr['synthetic_dcr_median']:.4f}")
+    
+    fig, ax = plt.subplots(figsize=(10, 3.5))
+    upper = np.percentile(np.concatenate([dcr['synthetic_dcr_values'], dcr['real_dcr_values']]), 99)
+    bins = np.linspace(0, upper if upper > 0 else 1, 40)
+    ax.hist(dcr['real_dcr_values'], bins=bins, alpha=0.6, label="Real → nearest other real (baseline)")
+    ax.hist(dcr['synthetic_dcr_values'], bins=bins, alpha=0.6, label="Synthetic → nearest real")
+    ax.set_xlabel("Distance to closest record")
+    ax.set_ylabel("Rows")
+    ax.legend()
+    fig.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
+
 # Main application
 st.title("🔒 Privacy-Preserving Synthetic Data Generator")
 
@@ -145,18 +198,30 @@ if page == "1. Upload Dataset":
     
     upload_method = st.radio(
         "Choose upload method:",
-        ["Upload CSV file", "Enter file path"]
+        ["Use a sample dataset", "Upload CSV file", "Enter file path"]
     )
     
     data_loaded = False
+    dataset_name = None
     
-    if upload_method == "Upload CSV file":
+    if upload_method == "Use a sample dataset":
+        st.caption("No CSV handy? Try the app with a built-in dataset.")
+        sample_name = st.selectbox("Choose a sample dataset:", list(SAMPLE_DATASETS.keys()))
+        if st.button("Load Sample Dataset"):
+            try:
+                df = load_sample(sample_name)
+                data_loaded = True
+                dataset_name = sample_name
+            except Exception as e:
+                st.error(f"Error loading sample dataset: {e}")
+    elif upload_method == "Upload CSV file":
         uploaded_file = st.file_uploader("Upload a CSV file", type=["csv"])
         
         if uploaded_file is not None:
             try:
                 df = pd.read_csv(uploaded_file)
                 data_loaded = True
+                dataset_name = uploaded_file.name
             except Exception as e:
                 st.error(f"Error loading file: {e}")
     else:  # Enter file path
@@ -166,11 +231,20 @@ if page == "1. Upload Dataset":
             try:
                 df = pd.read_csv(file_path)
                 data_loaded = True
+                dataset_name = os.path.basename(file_path)
             except Exception as e:
                 st.error(f"Error loading file: {e}")
     
     if data_loaded:
+        new_dataset = (
+            st.session_state.real_data is None
+            or dataset_name != st.session_state.dataset_name
+            or not st.session_state.real_data.equals(df)
+        )
+        if new_dataset:
+            reset_downstream_state()
         st.session_state.real_data = df
+        st.session_state.dataset_name = dataset_name
         st.success(f"Dataset loaded successfully! Shape: {df.shape}")
         
         # Display data preview
@@ -272,6 +346,20 @@ elif page == "2. Train Model":
                     # Store model and metrics in session state
                     st.session_state.model = model
                     st.session_state.training_metrics = training_metrics
+                    st.session_state.synthetic_data = None
+                    st.session_state.evaluation_results = None
+                    st.session_state.dcr_results = None
+                    st.session_state.run_meta = {
+                        "Dataset": st.session_state.dataset_name,
+                        "Real rows": len(df),
+                        "Columns": df.shape[1],
+                        "Differential privacy": "On" if use_dp else "Off",
+                        "Target ε": epsilon if use_dp else None,
+                        "δ": delta if use_dp else None,
+                        "Epochs": epochs,
+                        "Batch size": batch_size,
+                        "Training time (s)": round(training_metrics['training_time'], 2),
+                    }
                     
                     st.success("Model trained successfully!")
                     
@@ -329,22 +417,25 @@ elif page == "3. Generate Synthetic Data":
                     output_path = save_dataframe(synthetic_data, "synthetic_data.csv")
                     st.info(f"Synthetic data saved to: {output_path}")
                     
-                    # Provide download link
-                    with open(output_path, 'rb') as f:
-                        st.download_button(
-                            label="Download Synthetic Data",
-                            data=f,
-                            file_name="synthetic_data.csv",
-                            mime="text/csv"
-                        )
-                    
-                    # Display data preview
-                    st.subheader("Synthetic Data Preview")
-                    st.dataframe(synthetic_data.head())
+                    st.session_state.evaluation_results = None
+                    st.session_state.dcr_results = None
+                    st.session_state.run_meta["Synthetic rows"] = len(synthetic_data)
                     
                     st.info("✅ Synthetic data generated. Proceed to 'Evaluate & Visualize' step.")
                 except Exception as e:
                     st.error(f"Error generating synthetic data: {e}")
+        
+        # Download and preview stay visible across reruns
+        if st.session_state.synthetic_data is not None:
+            synthetic_data = st.session_state.synthetic_data
+            st.download_button(
+                label="Download Synthetic Data",
+                data=synthetic_data.to_csv(index=False).encode("utf-8"),
+                file_name="synthetic_data.csv",
+                mime="text/csv"
+            )
+            st.subheader("Synthetic Data Preview")
+            st.dataframe(synthetic_data.head())
 
 # 4. Evaluate & Visualize
 elif page == "4. Evaluate & Visualize":
@@ -398,6 +489,13 @@ elif page == "4. Evaluate & Visualize":
                     # Store results
                     st.session_state.evaluation_results = results
                     
+                    # Record-level privacy check (Distance to Closest Record)
+                    try:
+                        st.session_state.dcr_results = distance_to_closest_record(real_data, synthetic_data)
+                    except Exception as dcr_error:
+                        st.session_state.dcr_results = None
+                        st.warning(f"Could not run the Distance to Closest Record check: {dcr_error}")
+                    
                     st.success("Evaluation completed successfully!")
                     
                     # Save evaluation results
@@ -433,6 +531,33 @@ elif page == "4. Evaluate & Visualize":
         # Display evaluation results if available
         if st.session_state.evaluation_results is not None:
             display_metrics(st.session_state.evaluation_results)
+            
+            dcr = st.session_state.dcr_results
+            if dcr is not None:
+                display_dcr(dcr)
+            
+            # Downloadable report
+            st.subheader("Download Report")
+            report_data = build_report_data(
+                st.session_state.evaluation_results,
+                dcr,
+                st.session_state.run_meta,
+            )
+            col1, col2 = st.columns(2)
+            with col1:
+                st.download_button(
+                    label="Download Report (Markdown)",
+                    data=build_markdown_report(report_data).encode("utf-8"),
+                    file_name="synthetic_data_report.md",
+                    mime="text/markdown",
+                )
+            with col2:
+                st.download_button(
+                    label="Download Report (JSON)",
+                    data=build_json_report(report_data).encode("utf-8"),
+                    file_name="synthetic_data_report.json",
+                    mime="application/json",
+                )
             
             # Visualizations
             st.subheader("Visualizations")
@@ -486,7 +611,8 @@ if st.sidebar.checkbox("Show Debug Info", value=False):
         "Data Loaded": st.session_state.real_data is not None,
         "Model Trained": st.session_state.model is not None,
         "Synthetic Data Generated": st.session_state.synthetic_data is not None,
-        "Evaluation Complete": st.session_state.evaluation_results is not None
+        "Evaluation Complete": st.session_state.evaluation_results is not None,
+        "DCR Check Complete": st.session_state.dcr_results is not None
     }
     for key, value in state_info.items():
         st.sidebar.write(f"{key}: {value}")

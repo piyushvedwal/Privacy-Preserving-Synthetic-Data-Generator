@@ -151,6 +151,8 @@ class PrivacyPreservingCTGAN:
                     for batch_idx, (real_data, _) in enumerate(memory_safe_data_loader):
                         # Train discriminator
                         optimizer.zero_grad()
+                        # Keep the batch on the same device as the discriminator (CPU, CUDA or Apple MPS)
+                        real_data = real_data.to(self.model._device)
                         # Forward pass
                         real_prediction = discriminator(real_data)
                         # Generate fake data using the CTGAN model's sample method

@@ -12,6 +12,9 @@ This application enables researchers, developers, and data scientists to **train
 
 ## 🧩 Key Features
 
+### 📦 Built-in Sample Datasets  
+- Try the app instantly with Iris, Wine, Breast Cancer or Diabetes data, no CSV needed  
+
 ### 🔧 Data Preprocessing  
 - Automatic detection of numerical and categorical features  
 - Missing value imputation  
@@ -38,6 +41,7 @@ This application enables researchers, developers, and data scientists to **train
 **Privacy**  
 - Membership inference attack (MIA) simulation  
 - Differential Privacy (ε, δ) metrics  
+- **Distance to Closest Record (DCR)** check: flags synthetic rows that copy or sit unusually close to real records, with a Low / Medium / High risk level and a distance histogram  
 
 **Utility**  
 - Train-on-synthetic, test-on-real (ToS-ToR) ML evaluation  
@@ -47,16 +51,20 @@ This application enables researchers, developers, and data scientists to **train
 - **Correlation heatmaps** for real vs synthetic data  
 - Intuitive metric summaries for quick interpretation  
 
+### 📄 Downloadable Reports  
+- Export all fidelity, privacy, utility and DCR results as a **Markdown** or **JSON** report  
+- Synthetic dataset download stays available after the page reruns  
+
 ---
 
 ## 🖥️ User Interface  
 Built with **Streamlit**, offering an interactive and intuitive workflow:
 
-1. **Upload Dataset** (CSV)  
+1. **Upload Dataset** (CSV, file path, or a built-in sample)  
 2. **Train Model** (CTGAN + Optional Differential Privacy)  
 3. **Generate Synthetic Data**  
 4. **Evaluate & Visualize** results  
-5. **Download Synthetic Dataset**  
+5. **Download Synthetic Dataset and Evaluation Report**  
 
 ---
 
@@ -111,6 +119,9 @@ Detailed instructions available in [`DEPLOYMENT.md`](DEPLOYMENT.md).
 ├── data_preprocess.py     # Data cleaning, encoding, and feature detection
 ├── model_train.py         # CTGAN + Differential Privacy training module
 ├── evaluate.py            # Evaluation metrics for fidelity, privacy, and utility
+├── privacy_checks.py      # Distance to Closest Record (DCR) and exact-copy detection
+├── sample_datasets.py     # Built-in demo datasets
+├── report.py              # Markdown / JSON evaluation report builder
 ├── requirements.txt       # Python dependencies
 ├── DEPLOYMENT.md          # Deployment guide (Streamlit, Docker, Heroku)
 └── README.md              # Project documentation
