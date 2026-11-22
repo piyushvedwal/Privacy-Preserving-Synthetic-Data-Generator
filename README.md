@@ -6,7 +6,7 @@ This application enables researchers, developers, and data scientists to **train
 ---
 
 ## 🚀 Live Demo  
-👉 **Try it here:** [https://synthetic-data-generator-gk.streamlit.app/](https://synthetic-data-generator-gk.streamlit.app/)
+👉 **Try it here:** [https://piyush-synthetic-data-generator.streamlit.app/](https://piyush-synthetic-data-generator.streamlit.app/)
 
 ---
 
@@ -86,7 +86,7 @@ This app is ready for deployment on multiple platforms:
 
 ### ✅ **1. Streamlit Cloud (Recommended)**
 - Easiest method — directly deploy via GitHub  
-- Example live app: [https://synthetic-data-generator-gk.streamlit.app/](https://synthetic-data-generator-gk.streamlit.app/)
+- Example live app: [https://piyush-synthetic-data-generator.streamlit.app/](https://piyush-synthetic-data-generator.streamlit.app/)
 
 ### 🐳 **2. Docker**
 ```bash
