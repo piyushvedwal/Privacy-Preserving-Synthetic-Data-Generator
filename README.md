@@ -22,8 +22,9 @@ This application enables researchers, developers, and data scientists to **train
 - Intelligent feature type handling for mixed datasets  
 
 ### 🧠 Model Training  
-- **CTGAN (Conditional Tabular GAN)** from **SDV (Synthetic Data Vault)**  
-- Optional **Differential Privacy integration** using **Opacus** (DP-SGD)  
+- **Without DP:** **CTGAN (Conditional Tabular GAN)** from **SDV (Synthetic Data Vault)**  
+- **With DP:** a **DP-GAN** whose discriminator is trained with **DP-SGD** via **Opacus** (per-record gradient clipping, Gaussian noise, Poisson sampling, RDP accounting)  
+- The reported ε is the budget **actually spent**, as measured by the Opacus accountant  
 - Customizable privacy parameters (ε, δ) for tunable privacy-utility trade-off  
 
 ### 🧬 Synthetic Data Generation  
@@ -61,7 +62,7 @@ This application enables researchers, developers, and data scientists to **train
 Built with **Streamlit**, offering an interactive and intuitive workflow:
 
 1. **Upload Dataset** (CSV, file path, or a built-in sample)  
-2. **Train Model** (CTGAN + Optional Differential Privacy)  
+2. **Train Model** (CTGAN, or DP-GAN with Differential Privacy)  
 3. **Generate Synthetic Data**  
 4. **Evaluate & Visualize** results  
 5. **Download Synthetic Dataset and Evaluation Report**  
@@ -117,7 +118,8 @@ Detailed instructions available in [`DEPLOYMENT.md`](DEPLOYMENT.md).
 ```
 ├── app.py                 # Streamlit user interface
 ├── data_preprocess.py     # Data cleaning, encoding, and feature detection
-├── model_train.py         # CTGAN + Differential Privacy training module
+├── model_train.py         # Training entry point: CTGAN, or DP-GAN when DP is on
+├── dp_gan.py              # Differentially private GAN trained with DP-SGD (Opacus)
 ├── evaluate.py            # Evaluation metrics for fidelity, privacy, and utility
 ├── privacy_checks.py      # Distance to Closest Record (DCR) and exact-copy detection
 ├── sample_datasets.py     # Built-in demo datasets
@@ -132,6 +134,11 @@ Detailed instructions available in [`DEPLOYMENT.md`](DEPLOYMENT.md).
 ## 🔒 Privacy Considerations
 
 This tool employs **Differential Privacy (DP)** to provide **formal privacy guarantees**.  
+
+**How the guarantee is achieved.** With DP on, a GAN is trained in which only the discriminator ever sees real records. The discriminator is trained with DP-SGD: each record's gradient is clipped to a maximum norm and Gaussian noise calibrated to the target (ε, δ) is added, with Poisson-sampled batches tracked by the Opacus RDP accountant. The generator never touches real data and only learns from the private discriminator, so by the post-processing property of DP the generator, and every synthetic row it produces, carries the same (ε, δ) guarantee.
+
+**Scope.** The guarantee covers model training. Column means/standard deviations used for scaling and the list of category values are taken from the data without noise, so treat those as public.
+
 The **privacy budget (ε)** defines the balance between privacy and data utility:
 
 | ε (Epsilon) Range | Privacy Level | Utility |
@@ -139,7 +146,9 @@ The **privacy budget (ε)** defines the balance between privacy and data utility
 | 0.1 – 1.0 | 🔐 Strong Privacy | ⚠️ Lower Utility |
 | 5.0 – 10.0 | ⚖️ Moderate Privacy | ✅ Higher Utility |
 
-Membership inference tests are used to evaluate **privacy leakage risk**.
+Membership inference tests and the **Distance to Closest Record** check are used to evaluate **privacy leakage risk** empirically.
+
+> **Dataset size matters.** DP noise is large relative to the signal on small datasets. On a few hundred rows expect usable data only around ε = 5–10; thousands of rows give much better fidelity at the same ε. Around 100 epochs usually works best with DP, because every extra epoch spends privacy budget.
 
 ---
 

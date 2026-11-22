@@ -299,7 +299,10 @@ elif page == "2. Train Model":
         
         with col1:
             use_dp = st.checkbox("Use Differential Privacy", value=True)
-            epochs = st.slider("Training Epochs", min_value=50, max_value=500, value=300, step=50)
+            epochs = st.slider("Training Epochs", min_value=50, max_value=500,
+                               value=100 if use_dp else 300, step=50,
+                               help="With differential privacy every extra epoch costs privacy budget, "
+                                    "so fewer epochs (around 100) usually give better data.")
             batch_size = st.slider("Batch Size", min_value=100, max_value=1000, value=500, step=100)
         
         with col2:
@@ -312,6 +315,24 @@ elif page == "2. Train Model":
                 epsilon = 0.0
                 delta = 0.0
                 max_grad_norm = 1.0
+        
+        if use_dp:
+            n_rows = len(st.session_state.real_data)
+            st.info(
+                "**How the privacy guarantee works:** a GAN is trained where only the discriminator sees "
+                "real records, using DP-SGD (per-record gradient clipping plus calibrated Gaussian noise, via "
+                "Opacus). The generator never sees real data, so every synthetic row inherits the "
+                "(ε, δ) guarantee. Column statistics used for scaling and the list of categories are "
+                "taken from the data without noise."
+            )
+            if n_rows < 1000 or epsilon < 5:
+                st.warning(
+                    f"Your dataset has {n_rows} rows and ε = {epsilon}. Differential privacy adds a lot of noise "
+                    "on small datasets or small ε, so expect lower fidelity. Larger datasets (thousands of rows) "
+                    "or ε around 5–10 give noticeably better synthetic data."
+                )
+            if delta >= 1.0 / n_rows:
+                st.warning(f"δ should be smaller than 1 / number of rows (1/{n_rows} = {1.0 / n_rows:.1e}).")
         
         # Train button
         if st.button("Train Model"):
@@ -341,7 +362,9 @@ elif page == "2. Train Model":
                     )
                     
                     # Train model
-                    training_metrics = model.train(processed_df, discrete_columns)
+                    training_metrics = model.train(
+                        processed_df, discrete_columns, preprocessor.one_hot_encoding_maps
+                    )
                     
                     # Store model and metrics in session state
                     st.session_state.model = model
@@ -360,6 +383,14 @@ elif page == "2. Train Model":
                         "Batch size": batch_size,
                         "Training time (s)": round(training_metrics['training_time'], 2),
                     }
+                    if use_dp:
+                        st.session_state.run_meta.update({
+                            "ε spent": round(training_metrics['epsilon'], 4),
+                            "Noise multiplier": round(training_metrics['noise_multiplier'], 3),
+                            "Max gradient norm": max_grad_norm,
+                            "Sampling rate": round(training_metrics['sample_rate'], 4),
+                            "DP-SGD steps": training_metrics['steps'],
+                        })
                     
                     st.success("Model trained successfully!")
                     
@@ -370,6 +401,12 @@ elif page == "2. Train Model":
                     
                     if use_dp:
                         st.write(f"Final privacy guarantee: (ε={training_metrics['epsilon']:.2f}, δ={training_metrics['delta']:.1e})")
+                        st.write(
+                            f"DP-SGD: noise multiplier {training_metrics['noise_multiplier']:.2f}, "
+                            f"sampling rate {training_metrics['sample_rate']:.3f} "
+                            f"(expected batch {training_metrics['expected_batch_size']}), "
+                            f"{training_metrics['steps']} steps"
+                        )
                     
                     st.info("✅ Model trained successfully. Proceed to 'Generate Synthetic Data' step.")
                 except Exception as e:

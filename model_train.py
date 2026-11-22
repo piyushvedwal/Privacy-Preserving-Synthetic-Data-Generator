@@ -8,8 +8,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from ctgan import CTGAN
-from opacus import PrivacyEngine
-from opacus.utils.batch_memory_manager import BatchMemoryManager
+from dp_gan import DPGAN
 from typing import Dict, List, Tuple, Union, Optional, Any
 import logging
 import time
@@ -51,13 +50,20 @@ class PrivacyPreservingCTGAN:
         self.privacy_engine = None
         self.final_epsilon = None
         self.final_alpha = None
+        self.privacy_report = {}
         
-    def train(self, data: pd.DataFrame, discrete_columns: List[str] = None) -> Dict[str, Any]:
-        """Train the CTGAN model with or without Differential Privacy.
+    def train(self, data: pd.DataFrame, discrete_columns: List[str] = None,
+              column_groups: Optional[Dict[str, List[str]]] = None) -> Dict[str, Any]:
+        """Train the synthesizer with or without Differential Privacy.
+        
+        Without DP this trains a standard CTGAN. With DP it trains a DP-GAN whose
+        discriminator is the only component that sees real data and is trained with
+        DP-SGD (Opacus); see dp_gan.py for the privacy argument.
         
         Args:
             data: Input DataFrame (preprocessed)
             discrete_columns: List of discrete column names
+            column_groups: Optional mapping of original categorical column -> its one-hot columns
             
         Returns:
             Dictionary with training metrics and privacy budget
@@ -76,103 +82,18 @@ class PrivacyPreservingCTGAN:
         }
         
         if self.use_dp:
-            logging.info(f"Training CTGAN with Differential Privacy (ε={self.epsilon}, δ={self.delta})")
-            # For DP training, we need to modify the training process
-            # We'll use a lower number of epochs and modify the optimizer
-            ctgan_params['epochs'] = 1  # We'll handle epochs manually for DP
-            
-            # Initialize CTGAN
-            self.model = CTGAN(
-                embedding_dim=128,
-                generator_dim=(256, 256),
-                discriminator_dim=(256, 256),
-                **ctgan_params
-            )
-            
-            # Prepare the model but don't train yet
-            # Note: Direct ctgan package doesn't support training_step parameter
-            # We'll initialize the model but handle training manually
-            self.model.fit(data, discrete_columns)
-            
-            # Create a discriminator manually since we can't access it directly from the CTGAN model
-            # This should match the architecture used in the CTGAN model
-            from torch import nn
-            
-            discriminator = nn.Sequential(
-                nn.Linear(data.shape[1], 256),
-                nn.LeakyReLU(0.2),
-                nn.Linear(256, 256),
-                nn.LeakyReLU(0.2),
-                nn.Linear(256, 1)
-            ).to(self.model._device)
-                
-            optimizer = optim.Adam(
-                discriminator.parameters(),
-                lr=2e-4,
-                betas=(0.5, 0.9)
-            )
-            
-            # Create privacy engine
-            self.privacy_engine = PrivacyEngine()
-            
-            # Create a DataLoader for our discriminator
-            # Convert the pandas DataFrame to a PyTorch dataset
-            tensor_data = torch.tensor(data.values, dtype=torch.float32)
-            dataset = TensorDataset(tensor_data, torch.zeros(len(data)))
-            data_loader = DataLoader(
-                dataset,
-                batch_size=self.batch_size,
-                shuffle=True,
-                drop_last=False
-            )
-            
-            # Attach privacy engine to the discriminator
-            discriminator, optimizer, train_loader = self.privacy_engine.make_private_with_epsilon(
-                module=discriminator,
-                optimizer=optimizer,
-                data_loader=data_loader,
-                epochs=self.epochs,
-                target_epsilon=self.epsilon,
-                target_delta=self.delta,
+            logging.info(f"Training DP-GAN with Differential Privacy (target ε={self.epsilon}, δ={self.delta})")
+            self.model = DPGAN(
+                epsilon=self.epsilon,
+                delta=self.delta,
                 max_grad_norm=self.max_grad_norm,
+                epochs=self.epochs,
+                batch_size=self.batch_size,
+                verbose=self.verbose,
             )
-            
-            # Manual training loop with privacy
-            for epoch in range(self.epochs):
-                if self.verbose and epoch % 10 == 0:
-                    logging.info(f"DP-CTGAN Epoch {epoch}/{self.epochs}")
-                
-                # Train discriminator with DP
-                with BatchMemoryManager(
-                    data_loader=train_loader,
-                    max_physical_batch_size=self.batch_size,
-                    optimizer=optimizer
-                ) as memory_safe_data_loader:
-                    for batch_idx, (real_data, _) in enumerate(memory_safe_data_loader):
-                        # Train discriminator
-                        optimizer.zero_grad()
-                        # Keep the batch on the same device as the discriminator (CPU, CUDA or Apple MPS)
-                        real_data = real_data.to(self.model._device)
-                        # Forward pass
-                        real_prediction = discriminator(real_data)
-                        # Generate fake data using the CTGAN model's sample method
-                        # We'll use the sample method to generate fake data instead of accessing internal attributes
-                        fake_data_np = self.model.sample(real_data.size(0))
-                        fake_data = torch.tensor(fake_data_np.values, dtype=torch.float32).to(self.model._device)
-                        fake_prediction = discriminator(fake_data.detach())
-                        # Compute loss
-                        loss_d = -(torch.mean(real_prediction) - torch.mean(fake_prediction))
-                        # Backward pass
-                        loss_d.backward()
-                        optimizer.step()
-                
-                # Since we can't access the generator directly, we'll skip the generator training step
-                # The CTGAN model will continue to train its generator internally during the fit method
-                # This is a simplification, but it allows us to apply DP to the discriminator
-                pass
-            
-            # Get the final privacy spent
-            self.final_epsilon = self.privacy_engine.get_epsilon(self.delta)
+            self.privacy_report = self.model.fit(data, discrete_columns, column_groups)
+            self.final_epsilon = self.privacy_report["epsilon"]
+            self.final_alpha = self.privacy_report["alpha"]
             
             logging.info(f"Final privacy guarantee: (ε={self.final_epsilon:.2f}, δ={self.delta})")
         else:
@@ -200,6 +121,10 @@ class PrivacyPreservingCTGAN:
             metrics["epsilon"] = self.final_epsilon
             metrics["delta"] = self.delta
             metrics["alpha"] = self.final_alpha
+            metrics["noise_multiplier"] = self.privacy_report["noise_multiplier"]
+            metrics["sample_rate"] = self.privacy_report["sample_rate"]
+            metrics["expected_batch_size"] = self.privacy_report["expected_batch_size"]
+            metrics["steps"] = self.privacy_report["steps"]
         
         return metrics
     
@@ -241,8 +166,7 @@ class PrivacyPreservingCTGAN:
         if self.model is None:
             raise ValueError("No trained model to save")
             
-        # For ctgan package
-        self.model.save(path)
+        torch.save(self.model, path)
         logging.info(f"Model saved to {path}")
     
     def load_model(self, path: str) -> None:
@@ -251,7 +175,5 @@ class PrivacyPreservingCTGAN:
         Args:
             path: Path to the saved model
         """
-        # For ctgan package, we need to initialize and then load
-        self.model = CTGAN()
-        self.model.load(path)
+        self.model = torch.load(path, weights_only=False)
         logging.info(f"Model loaded from {path}")
