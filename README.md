@@ -35,17 +35,18 @@ This application enables researchers, developers, and data scientists to **train
 
 **Fidelity**  
 - Kolmogorov–Smirnov (KS) Test  
-- Chi-Square Test for categorical distributions  
+- Category similarity (1 − total variation distance) for categorical columns  
 - Correlation matrix similarity  
-- Propensity score classifier  
+- Propensity score classifier (can a model tell real from synthetic?), with text columns one-hot encoded  
 
 **Privacy**  
-- Membership inference attack (MIA) simulation  
+- **Membership inference attack (MIA):** by default 20% of rows are held out of training; an attacker then tries to tell training rows from held-out rows by their distance to the synthetic data (AUC 0.5 = no measurable leakage)  
 - Differential Privacy (ε, δ) metrics  
 - **Distance to Closest Record (DCR)** check: flags synthetic rows that copy or sit unusually close to real records, with a Low / Medium / High risk level and a distance histogram  
 
 **Utility**  
-- Train-on-synthetic, test-on-real (ToS-ToR) ML evaluation  
+- Train-on-synthetic, test-on-real (TSTR) ML evaluation on **held-out rows the generator never saw**  
+- Accuracy for categorical targets, R² for numeric targets  
 
 ### 📈 Visualization Dashboard  
 - Side-by-side **distribution comparison plots**  

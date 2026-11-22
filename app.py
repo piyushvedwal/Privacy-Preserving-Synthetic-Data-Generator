@@ -10,6 +10,7 @@ import os
 import json
 import time
 from datetime import datetime
+from sklearn.model_selection import train_test_split
 from typing import Dict, List, Tuple, Union, Optional, Any
 
 # Import custom modules
@@ -49,10 +50,18 @@ if 'run_meta' not in st.session_state:
     st.session_state.run_meta = {}
 if 'dataset_name' not in st.session_state:
     st.session_state.dataset_name = None
+if 'train_data' not in st.session_state:
+    st.session_state.train_data = None
+if 'holdout_data' not in st.session_state:
+    st.session_state.holdout_data = None
+
+HOLDOUT_FRACTION = 0.2
+MIN_ROWS_FOR_HOLDOUT = 50
 
 def reset_downstream_state() -> None:
     """Clear model, synthetic data and evaluation when a new dataset is loaded."""
-    for key in ['model', 'training_metrics', 'synthetic_data', 'evaluation_results', 'dcr_results']:
+    for key in ['model', 'training_metrics', 'synthetic_data', 'evaluation_results', 'dcr_results',
+                'train_data', 'holdout_data']:
         st.session_state[key] = None
     st.session_state.run_meta = {}
 
@@ -94,8 +103,9 @@ def display_metrics(metrics: Dict[str, Any]) -> None:
             if 'correlation_similarity' in fidelity and fidelity['correlation_similarity'] is not None:
                 st.metric("Correlation Similarity", f"{fidelity['correlation_similarity']:.4f}")
             
-            if 'chi2_mean' in fidelity and fidelity['chi2_mean'] is not None:
-                st.metric("Chi-Square Similarity (Mean)", f"{fidelity['chi2_mean']:.4f}")
+            if fidelity.get('category_similarity_mean') is not None:
+                st.metric("Category Similarity (1 − TVD)", f"{fidelity['category_similarity_mean']:.4f}",
+                          help="How closely category frequencies match, averaged over categorical columns. 1 = identical.")
         
         with col3:
             if 'pmse_similarity' in fidelity and fidelity['pmse_similarity'] is not None:
@@ -117,19 +127,26 @@ def display_metrics(metrics: Dict[str, Any]) -> None:
         
         with col2:
             if 'membership_inference_auc' in privacy and privacy['membership_inference_auc'] is not None:
-                st.metric("Membership Inference AUC", f"{privacy['membership_inference_auc']:.4f}")
+                st.metric("Membership Inference AUC", f"{privacy['membership_inference_auc']:.4f}",
+                          help="Can an attacker tell training rows from held-out rows using the synthetic data? "
+                               "0.5 = no better than guessing.")
         
         with col3:
             if 'epsilon' in privacy and privacy['epsilon'] is not None:
                 st.metric("Differential Privacy ε", f"{privacy['epsilon']:.2f}")
                 if 'delta' in privacy and privacy['delta'] is not None:
                     st.metric("Differential Privacy δ", f"{privacy['delta']:.1e}")
+        
+        if privacy.get('membership_inference_note'):
+            st.caption(f"Membership inference: {privacy['membership_inference_note']}")
     
     # Utility metrics
     if 'utility' in metrics:
         st.subheader("Utility Metrics")
         utility = metrics['utility']
         
+        score_name = utility.get('score_name', 'accuracy')
+        label = "Accuracy" if score_name == 'accuracy' else score_name
         col1, col2, col3 = st.columns(3)
         
         with col1:
@@ -138,11 +155,16 @@ def display_metrics(metrics: Dict[str, Any]) -> None:
         
         with col2:
             if 'real_model_accuracy' in utility and utility['real_model_accuracy'] is not None:
-                st.metric("Real Model Accuracy", f"{utility['real_model_accuracy']:.4f}")
+                st.metric(f"Real-Trained Model {label}", f"{utility['real_model_accuracy']:.4f}")
         
         with col3:
             if 'synthetic_model_accuracy' in utility and utility['synthetic_model_accuracy'] is not None:
-                st.metric("Synthetic Model Accuracy", f"{utility['synthetic_model_accuracy']:.4f}")
+                st.metric(f"Synthetic-Trained Model {label}", f"{utility['synthetic_model_accuracy']:.4f}")
+        
+        if utility.get('evaluated_on'):
+            st.caption(f"Both models are tested on {utility['evaluated_on']} ({utility.get('task', 'classification')}).")
+        if utility.get('error'):
+            st.warning(f"Utility could not be computed: {utility['error']}")
 
 def display_dcr(dcr: Dict[str, Any]) -> None:
     """Show the Distance to Closest Record privacy check."""
@@ -316,8 +338,18 @@ elif page == "2. Train Model":
                 delta = 0.0
                 max_grad_norm = 1.0
         
+        n_total = len(st.session_state.real_data)
+        use_holdout = st.checkbox(
+            f"Hold out {int(HOLDOUT_FRACTION * 100)}% of rows for honest evaluation",
+            value=n_total >= MIN_ROWS_FOR_HOLDOUT,
+            disabled=n_total < MIN_ROWS_FOR_HOLDOUT,
+            help="Held-out rows are never shown to the model. They let the Evaluate step run a real "
+                 "membership inference attack and test utility on data the generator never saw. "
+                 f"Needs at least {MIN_ROWS_FOR_HOLDOUT} rows."
+        )
+        
         if use_dp:
-            n_rows = len(st.session_state.real_data)
+            n_rows = int(round(n_total * (1 - HOLDOUT_FRACTION))) if use_holdout else n_total
             st.info(
                 "**How the privacy guarantee works:** a GAN is trained where only the discriminator sees "
                 "real records, using DP-SGD (per-record gradient clipping plus calibrated Gaussian noise, via "
@@ -338,8 +370,14 @@ elif page == "2. Train Model":
         if st.button("Train Model"):
             with st.spinner("Training model... This may take a few minutes."):
                 try:
-                    # Get data
-                    df = st.session_state.real_data
+                    # Get data, optionally holding out rows the model never sees
+                    full_df = st.session_state.real_data
+                    if use_holdout:
+                        df, holdout_df = train_test_split(full_df, test_size=HOLDOUT_FRACTION, random_state=42)
+                    else:
+                        df, holdout_df = full_df, None
+                    st.session_state.train_data = df
+                    st.session_state.holdout_data = holdout_df
                     preprocessor = st.session_state.preprocessor
                     column_types = st.session_state.column_types
                     
@@ -374,7 +412,9 @@ elif page == "2. Train Model":
                     st.session_state.dcr_results = None
                     st.session_state.run_meta = {
                         "Dataset": st.session_state.dataset_name,
-                        "Real rows": len(df),
+                        "Real rows": len(full_df),
+                        "Training rows": len(df),
+                        "Held-out rows": len(holdout_df) if holdout_df is not None else 0,
                         "Columns": df.shape[1],
                         "Differential privacy": "On" if use_dp else "Off",
                         "Target ε": epsilon if use_dp else None,
@@ -520,7 +560,9 @@ elif page == "4. Evaluate & Visualize":
                         real_data=real_data,
                         synthetic_data=synthetic_data,
                         privacy_metrics=privacy_metrics,
-                        target_column=target_column
+                        target_column=target_column,
+                        train_data=st.session_state.train_data,
+                        holdout_data=st.session_state.holdout_data
                     )
                     
                     # Store results

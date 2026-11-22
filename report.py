@@ -42,21 +42,24 @@ _SECTIONS = {
     "fidelity": [
         ("overall_fidelity", "Overall fidelity"),
         ("ks_mean", "KS similarity (mean)"),
-        ("chi2_mean", "Chi-square similarity (mean)"),
+        ("category_similarity_mean", "Category similarity (1 − TVD)"),
         ("correlation_similarity", "Correlation similarity"),
         ("pmse_similarity", "Propensity similarity"),
         ("real_vs_synthetic_auc", "Real vs synthetic AUC"),
     ],
     "privacy": [
         ("privacy_score", "Privacy score"),
-        ("membership_inference_auc", "Membership inference AUC"),
+        ("membership_inference_auc", "Membership inference AUC (0.5 = no leakage)"),
+        ("membership_inference_advantage", "Membership inference advantage"),
         ("epsilon", "Differential privacy ε"),
         ("delta", "Differential privacy δ"),
     ],
     "utility": [
         ("utility_ratio", "Utility ratio"),
-        ("real_model_accuracy", "Real model accuracy"),
-        ("synthetic_model_accuracy", "Synthetic model accuracy"),
+        ("score_name", "Score"),
+        ("real_model_accuracy", "Real-trained model score"),
+        ("synthetic_model_accuracy", "Synthetic-trained model score"),
+        ("evaluated_on", "Tested on"),
     ],
 }
 

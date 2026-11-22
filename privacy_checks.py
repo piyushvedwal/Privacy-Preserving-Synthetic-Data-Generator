@@ -9,45 +9,41 @@ import pandas as pd
 from sklearn.neighbors import NearestNeighbors
 
 
-def _encode(real: pd.DataFrame, other: pd.DataFrame) -> tuple:
-    """Encode both frames into the same numeric space.
+def encode_frames(reference: pd.DataFrame, *others: pd.DataFrame) -> tuple:
+    """Encode several frames into one shared numeric space.
 
-    Numeric columns are min-max scaled using the real data's range; categorical
-    columns are one-hot encoded with categories taken from both frames, so every
-    column contributes on a comparable 0-1 scale.
+    Numeric columns are min-max scaled using the reference frame's range;
+    categorical columns are one-hot encoded with categories taken from all frames,
+    so every column contributes on a comparable 0-1 scale. Only columns present in
+    every frame are used. Returns one array per input frame.
     """
-    columns = [c for c in real.columns if c in other.columns]
-    real = real[columns].copy()
-    other = other[columns].copy()
+    frames = [reference, *others]
+    columns = [c for c in reference.columns if all(c in f.columns for f in others)]
+    if not columns:
+        raise ValueError("No overlapping columns to compare.")
+    frames = [f[columns].copy() for f in frames]
 
-    numeric_cols = [c for c in columns if pd.api.types.is_numeric_dtype(real[c])]
+    numeric_cols = [c for c in columns if pd.api.types.is_numeric_dtype(reference[c])]
     categorical_cols = [c for c in columns if c not in numeric_cols]
 
-    parts_real, parts_other = [], []
+    parts = [[] for _ in frames]
 
     if numeric_cols:
-        r = real[numeric_cols].apply(pd.to_numeric, errors="coerce")
-        o = other[numeric_cols].apply(pd.to_numeric, errors="coerce")
-        lo, hi = r.min(), r.max()
+        ref = frames[0][numeric_cols].apply(pd.to_numeric, errors="coerce")
+        lo, hi = ref.min(), ref.max()
         span = (hi - lo).replace(0, 1)
-        r = ((r - lo) / span).fillna(0.5)
-        o = ((o - lo) / span).fillna(0.5)
-        parts_real.append(r.to_numpy(dtype=float))
-        parts_other.append(o.to_numpy(dtype=float))
+        for i, f in enumerate(frames):
+            num = f[numeric_cols].apply(pd.to_numeric, errors="coerce")
+            parts[i].append(((num - lo) / span).fillna(0.5).to_numpy(dtype=float))
 
     if categorical_cols:
-        combined = pd.concat(
-            [real[categorical_cols].astype(str), other[categorical_cols].astype(str)],
-            keys=["real", "other"],
-        )
+        keys = [str(i) for i in range(len(frames))]
+        combined = pd.concat([f[categorical_cols].astype(str) for f in frames], keys=keys)
         dummies = pd.get_dummies(combined, columns=categorical_cols, dtype=float)
-        parts_real.append(dummies.loc["real"].to_numpy())
-        parts_other.append(dummies.loc["other"].to_numpy())
+        for i, key in enumerate(keys):
+            parts[i].append(dummies.loc[key].to_numpy())
 
-    if not parts_real:
-        raise ValueError("No overlapping columns to compare.")
-
-    return np.hstack(parts_real), np.hstack(parts_other)
+    return tuple(np.hstack(p) for p in parts)
 
 
 def _risk_level(exact_match_rate: float, dcr_ratio: Optional[float]) -> str:
@@ -83,7 +79,7 @@ def distance_to_closest_record(
     if len(synth) > max_rows:
         synth = synth.sample(max_rows, random_state=random_state)
 
-    real_x, synth_x = _encode(real, synth)
+    real_x, synth_x = encode_frames(real, synth)
 
     nn = NearestNeighbors(n_neighbors=2).fit(real_x)
 
@@ -109,4 +105,54 @@ def distance_to_closest_record(
         "risk_level": _risk_level(exact_match_rate, dcr_ratio),
         "synthetic_dcr_values": synth_dcr,
         "real_dcr_values": real_dcr,
+    }
+
+
+def distance_membership_inference(
+    train_data: pd.DataFrame,
+    holdout_data: pd.DataFrame,
+    synthetic_data: pd.DataFrame,
+    max_rows: int = 3000,
+    random_state: int = 42,
+) -> Dict[str, Any]:
+    """Distance-based membership inference attack.
+
+    The attacker guesses that a real record was in the generator's training set if
+    a synthetic record lies close to it. Members are rows the generator was trained
+    on; non-members are held-out rows it never saw. An equal number of each is
+    scored by the negative distance to the closest synthetic row.
+
+    AUC 0.5 means the attacker cannot tell members from non-members (no measurable
+    leakage); values towards 1.0 mean synthetic data reveals who was in training.
+    """
+    from sklearn.metrics import roc_auc_score
+
+    n = min(len(train_data), len(holdout_data), max_rows)
+    if n < 5:
+        raise ValueError("Need at least 5 training and 5 held-out rows.")
+    members = train_data.sample(n, random_state=random_state)
+    non_members = holdout_data.sample(n, random_state=random_state)
+    synth = synthetic_data.dropna(how="all")
+    if len(synth) > max_rows:
+        synth = synth.sample(max_rows, random_state=random_state)
+
+    reference = pd.concat([train_data, holdout_data])
+    _, member_x, non_member_x, synth_x = encode_frames(reference, members, non_members, synth)
+    nn = NearestNeighbors(n_neighbors=1).fit(synth_x)
+    d_member = nn.kneighbors(member_x)[0][:, 0]
+    d_non_member = nn.kneighbors(non_member_x)[0][:, 0]
+
+    labels = np.r_[np.ones(n), np.zeros(n)]
+    scores = -np.r_[d_member, d_non_member]
+    auc = float(roc_auc_score(labels, scores))
+    threshold = np.median(scores)
+    accuracy = float(np.mean((scores > threshold) == labels.astype(bool)))
+
+    return {
+        "membership_inference_auc": auc,
+        "membership_inference_accuracy": accuracy,
+        "membership_inference_advantage": max(0.0, 2 * auc - 1),
+        "member_dcr_median": float(np.median(d_member)),
+        "non_member_dcr_median": float(np.median(d_non_member)),
+        "records_per_group": int(n),
     }
